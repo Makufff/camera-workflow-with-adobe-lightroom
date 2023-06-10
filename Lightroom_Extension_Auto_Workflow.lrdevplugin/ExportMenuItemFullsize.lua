@@ -1,3 +1,4 @@
+-- Original Scals
 -- Access the Lightroom SDK namespaces.
 local LrDialogs = import 'LrDialogs'
 local LrFunctionContext = import 'LrFunctionContext'
