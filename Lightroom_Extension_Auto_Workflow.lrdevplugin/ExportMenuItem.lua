@@ -1,3 +1,4 @@
+-- FIXSIZE 2000px 2000px
 -- Access the Lightroom SDK namespaces.
 local LrDialogs = import 'LrDialogs'
 local LrFunctionContext = import 'LrFunctionContext'
