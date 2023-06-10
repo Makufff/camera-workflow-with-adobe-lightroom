@@ -5,9 +5,6 @@ from oauth2client.tools import run_flow
 import requests
 import os
 
-# CLIENT_ID = '714770258367-o929tdpsr8o4i5flv5sbrv3eh3ao9ege.apps.googleusercontent.com'
-# CLIENT_SECRET = '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'
-
 # Start the OAuth flow to retrieve credentials
 def authorize_credentials():
     CLIENT_SECRET = 'credentials.json'
