@@ -1,4 +1,4 @@
-# Camera Workflow with Adobe Lightroom
+# Camera Workflow Together With Adobe Lightroom
 
 This project is a script for automated photo editing using Adobe Lightroom plugins. The script allows for automatic photo editing and uploads the edited images to Google Photos using the Google API.
 
