@@ -18,6 +18,21 @@ The following tools are used in this project:
 
 The scripting for this project is done using Lua and Python. Lua is used for scripting within Adobe Lightroom, while Python is used to interact with the Google Photos API.
 
+## Installation
+
+1. Install required Python libraries:
+
+```bash
+pip install google-auth google-auth-oauthlib google-auth-httplib2 requests
+```
+
+2. Create credentials.json file from Google Cloud Platform:
+   - Go to [Google Cloud Console](https://console.cloud.google.com/)
+   - Create a new project
+   - Enable the Google Photos Library API
+   - Create OAuth Client ID for Desktop application
+   - Download credentials.json and place it in the Send_image_google_photo folder
+
 ## How to Use
 
 To use the "Camera Workflow with Adobe Lightroom" script, follow these steps:
@@ -33,7 +48,18 @@ Please note that detailed instructions for configuring the script and obtaining 
 
 **Note:** Before running the script, ensure that you have a working internet connection and the required access permissions for accessing Adobe Lightroom and Google Photos API.
 
-For any issues or further assistance, please refer to the project's documentation or contact the project maintainer.
+## Folder Structure
+
+- `INPUT/` - Folder for placing images to be edited (for Lightroom)
+- `OUTPUT/` - Folder where Lightroom will export the edited images
+- `MOVEFILE/` - Folder where images will be moved after uploading to Google Photos
+- `Send_image_google_photo/` - Python code for uploading images to Google Photos
+- `Lightroom_Extension_Auto_Workflow.lrdevplugin/` - Lightroom plugin for automated editing
+
+## Troubleshooting
+
+- Check the photo_upload.log file for information about operations and errors
+- If you encounter issues with permanent token, you may need to delete the token.json file and log in again
 
 ## Conclusion
 
