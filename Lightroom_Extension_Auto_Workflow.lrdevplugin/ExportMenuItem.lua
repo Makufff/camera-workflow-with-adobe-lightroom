@@ -18,60 +18,151 @@ myLogger:enable('print')
 
 -- Process photos
 local function processPhotos(photos, outputFolder)
-	local exportSettings = {
-		LR_export_destinationType = "specificFolder",
-		LR_export_destinationPathPrefix = outputFolder,
-		LR_format = "JPEG",
-	}
+	myLogger:info("Processing photos (resize to 2000px) to output folder: " .. outputFolder)
 	
-	myLogger:info("Processing " .. #photos .. " photos to folder: " .. outputFolder)
+	-- Track rendered photos with their expected filenames
+	local renderedPhotos = {}
 	
-	-- Create output directory if it doesn't exist
+	-- Check if outputFolder is relative path or doesn't have drive letter (Windows)
+	if not string.match(outputFolder, "^%a:\\") and not string.match(outputFolder, "^/") then
+		-- Add current directory path
+		local currentFolder = LrPathUtils.getStandardFilePath("home")
+		outputFolder = LrPathUtils.child(currentFolder, outputFolder)
+		myLogger:info("Converting to absolute path: " .. outputFolder)
+	end
+	
+	myLogger:info("Using full export settings for rendition, 2000px mode")
+	
+	-- Make sure output folder exists
 	if not LrFileUtils.exists(outputFolder) then
 		myLogger:info("Creating output directory: " .. outputFolder)
 		LrFileUtils.createDirectory(outputFolder)
 	end
 	
-	local renderedPhotos = {}
-	
-	-- Export photos
-	LrExportSession.exportPhotos({
-		{ exportSettings = exportSettings, photos = photos, },
-		onPhotoDataRendered = function(exportContext, photo)
-			local filename = photo:getFormattedMetadata("fileName")
-			myLogger:info("Photo rendered: " .. filename)
-			table.insert(renderedPhotos, {
-				photo = photo,
-				filename = filename
-			})
-		end,
-		onPhotosExported = function(exportContext)
-			myLogger:info("Export completed")
+	LrFunctionContext.callWithContext("export", function(exportContext)
+		local progressScope = LrDialogs.showModalProgressDialog({
+			title = "Auto applying presets",
+			caption = "Preparing export...",
+			cannotCancel = false,
+			functionContext = exportContext
+		})
+
+		myLogger:info("Created export session with " .. #photos .. " photos")
+		myLogger:info("Exporting to: " .. outputFolder)
+		
+		-- Create export session with full settings
+		local exportSession = LrExportSession({
+			photosToExport = photos,
+			exportSettings = {
+				LR_collisionHandling = "rename",
+				LR_export_bitDepth = "8",
+				LR_export_colorSpace = "sRGB",
+				LR_export_destinationPathPrefix = outputFolder,
+				LR_export_destinationType = "specificFolder",
+				LR_export_useSubfolder = false,
+				LR_format = "JPEG",
+				LR_jpeg_quality = 1, -- Highest quality
+				LR_minimizeEmbeddedMetadata = true,
+				LR_outputSharpeningOn = false,
+				LR_reimportExportedPhoto = false,
+				LR_renamingTokensOn = true,
+				LR_size_doConstrain = true,
+				LR_size_doNotEnlarge = true,
+				LR_size_maxHeight = 2000,
+				LR_size_maxWidth = 2000,
+				LR_size_resolution = 72,
+				LR_size_units = "pixels",
+				LR_tokens = "{{image_name}}",
+				LR_useWatermark = false,
+			}
+		})
+
+		local numPhotos = exportSession:countRenditions()
+		myLogger:info("Number of renditions: " .. numPhotos)
+
+		local renditionParams = {
+			progressScope = progressScope,
+			renderProgressPortion = 1,
+			stopIfCanceled = true,
+		}
+
+		for i, rendition in exportSession:renditions(renditionParams) do
+			-- Stop processing if the cancel button has been pressed
+			if progressScope:isCanceled() then
+				break
+			end
+
+			-- Common caption for progress bar
+			local progressCaption = rendition.photo:getFormattedMetadata("fileName") .. " (" .. i .. "/" .. numPhotos .. ")"
+
+			progressScope:setPortionComplete(i - 1, numPhotos)
+			progressScope:setCaption("Processing " .. progressCaption)
 			
-			-- Check if files were actually created
-			myLogger:info("Verifying " .. #renderedPhotos .. " exported files")
-			local successCount = 0
+			local filename = rendition.photo:getFormattedMetadata("fileName")
+			myLogger:info("Rendering photo: " .. filename)
 			
-			for _, photoInfo in ipairs(renderedPhotos) do
-				local photo = photoInfo.photo
-				local filename = photoInfo.filename
-				local fileBasename = string.gsub(filename, "%.%w+$", "")
-				local expectedPath = LrFileUtils.child(outputFolder, fileBasename .. ".jpg")
+			local success, err = rendition:waitForRender()
+			
+			if success then
+				myLogger:info("Successfully rendered: " .. filename)
 				
-				myLogger:info("Checking file: " .. expectedPath)
-				
-				if LrFileUtils.exists(expectedPath) then
-					myLogger:info("SUCCESS: File exists: " .. expectedPath)
-					successCount = successCount + 1
+				-- Get the exported file path - handle potential nil return safely
+				local status, exportedFilePath = pcall(function() return rendition:getPath() end)
+				if status and exportedFilePath then
+					myLogger:info("File saved to: " .. exportedFilePath)
+					table.insert(renderedPhotos, {
+						filename = filename,
+						path = exportedFilePath
+					})
 				else
-					myLogger:error("FAILED: File does not exist: " .. expectedPath)
+					myLogger:info("File saved successfully, but path information not available")
+					-- Alternative approach to get path
+					local fileBasename = string.gsub(filename, "%.%w+$", "")
+					local estimatedPath = LrPathUtils.child(outputFolder, fileBasename .. ".jpg")
+					myLogger:info("Estimated file location: " .. estimatedPath)
+					table.insert(renderedPhotos, {
+						filename = filename,
+						path = estimatedPath
+					})
 				end
+			else
+				myLogger:error("Failed to render: " .. filename .. " - " .. tostring(err))
+			end
+		end
+		
+		-- Verify exported files exist
+		progressScope:setCaption("Verifying exported files...")
+		local exportedCount = 0
+		
+		for _, photo in ipairs(renderedPhotos) do
+			local path = photo.path
+			-- Add .jpg extension if needed
+			if not string.match(path:lower(), "%.jpe?g$") then
+				path = path .. ".jpg"
 			end
 			
-			LrDialogs.showBezel("Export completed. Successfully exported " .. successCount .. " of " .. #renderedPhotos .. " photos.")
-			myLogger:info("Export summary: " .. successCount .. " of " .. #renderedPhotos .. " photos were successfully exported")
-		end,
-	})
+			-- Check if file exists
+			local exists = LrFileUtils.exists(path)
+			if exists then
+				exportedCount = exportedCount + 1
+				myLogger:info("Verified file exists: " .. path)
+			else
+				myLogger:error("MISSING FILE: " .. path)
+			end
+		end
+		
+		-- Show message with count of successful exports
+		local resultMessage = "Export completed: " .. exportedCount .. " of " .. #renderedPhotos .. " to " .. outputFolder
+		LrDialogs.showBezel(resultMessage)
+		myLogger:info(resultMessage)
+		
+		-- If not all photos were exported successfully, show a warning
+		if exportedCount < #renderedPhotos then
+			LrDialogs.showError("Warning: Only " .. exportedCount .. " of " .. #renderedPhotos .. " photos were exported successfully. Check log for details.")
+		end
+	end)
+	
+	return #renderedPhotos > 0
 end
 
 -- Import pictures from folder where the rating is not 2 stars 
@@ -105,61 +196,95 @@ local function importFolder(LrCatalog, folder, outputFolder, silent)
 	end
 	
 	-- Use a synchronized call to wait for task completion
-	local taskResults = {}
+	local taskResults = {
+		success = false,
+		count = 0,
+		processComplete = false
+	}
 	
-	LrTasks.startAsyncTask(function()
-		local photos = folder:getPhotos()
-		myLogger:info("Found " .. #photos .. " photos in folder: " .. folder:getName())
+	-- Create a function context to run our process
+	LrFunctionContext.callWithContext("importFolder", function(context)
+		LrDialogs.showBezel("Processing photos from " .. folder:getName() .. "...")
 		
-		local export = {}
+		-- Run in a synchronous task so we can get the results
+		LrTasks.startAsyncTask(function()
+			local photos = folder:getPhotos()
+			myLogger:info("Found " .. #photos .. " photos in folder: " .. folder:getName())
+			
+			local export = {}
 
-		for i, photo in pairs(photos) do
-			-- Process photos that DON'T have a rating of 2 stars (original condition)
-			if (photo:getRawMetadata("rating") ~= 2) then
-				local filename = photo:getFormattedMetadata("fileName")
-				myLogger:info("Processing photo " .. i .. ": " .. filename)
+			for i, photo in pairs(photos) do
+				-- Process photos that DON'T have a rating of 2 stars (original condition)
+				if (photo:getRawMetadata("rating") ~= 2) then
+					local filename = photo:getFormattedMetadata("fileName")
+					myLogger:info("Processing photo " .. i .. ": " .. filename)
+					
+					LrCatalog:withWriteAccessDo("Apply Preset", function(context)
+						myLogger:info("Applying presets to photo: " .. filename)
+						
+						for _, preset in pairs(presets) do
+							myLogger:info("Applying preset: " .. preset:getName() .. " to " .. filename)
+							photo:applyDevelopPreset(preset)
+						end
+						
+						photo:setRawMetadata("rating", 2)
+						table.insert(export, photo)
+						myLogger:info("Added photo to export list: " .. filename)
+					end)
+				else
+					myLogger:info("Skipping photo with rating 2: " .. photo:getFormattedMetadata("fileName"))
+				end
+			end
+
+			myLogger:info("Total photos for export: " .. #export)
+			
+			if #export > 0 then
+				-- Be explicit about what we're about to do
+				myLogger:info("About to call processPhotos with " .. #export .. " photos")
+				LrDialogs.showBezel("Processing " .. #export .. " photos...")
 				
-				LrCatalog:withWriteAccessDo("Apply Preset", function(context)
-					myLogger:info("Applying presets to photo: " .. filename)
-					
-					for _, preset in pairs(presets) do
-						myLogger:info("Applying preset: " .. preset:getName() .. " to " .. filename)
-						photo:applyDevelopPreset(preset)
-					end
-					
-					photo:setRawMetadata("rating", 2)
-					table.insert(export, photo)
-					myLogger:info("Added photo to export list: " .. filename)
-				end)
+				-- Process photos - wait for result
+				local exportSuccess = processPhotos(export, outputFolder)
+				myLogger:info("processPhotos returned: " .. tostring(exportSuccess))
+				
+				taskResults.success = exportSuccess
+				taskResults.count = #export
 			else
-				myLogger:info("Skipping photo with rating 2: " .. photo:getFormattedMetadata("fileName"))
+				myLogger:warn("No photos to export")
+				if not silent then
+					LrDialogs.showError("No photos to export")
+				end
+				taskResults.success = false
+				taskResults.count = 0
+			end
+			
+			taskResults.processComplete = true
+		end)
+		
+		-- Wait for the task to complete
+		local timeout = 120 -- Maximum wait time in seconds
+		local start = os.time()
+		local waited = 0
+		
+		while (not taskResults.processComplete) and (waited < timeout) do
+			LrTasks.sleep(1)
+			waited = os.time() - start
+			if waited > 5 and waited % 10 == 0 then
+				myLogger:info("Still waiting for process to complete... " .. waited .. " seconds")
 			end
 		end
-
-		myLogger:info("Total photos for export: " .. #export)
 		
-		if #export > 0 then
-			-- Be explicit about what we're about to do
-			myLogger:info("About to call processPhotos with " .. #export .. " photos")
-			LrDialogs.showBezel("Processing " .. #export .. " photos...")
-			
-			-- Process photos
-			processPhotos(export, outputFolder)
-			
-			taskResults.success = true
-			taskResults.count = #export
-		else
-			myLogger:warn("No photos to export")
+		if not taskResults.processComplete then
+			myLogger:error("Process timed out after " .. timeout .. " seconds")
 			if not silent then
-				LrDialogs.showError("No photos to export")
+				LrDialogs.showError("Process timed out")
 			end
 			taskResults.success = false
-			taskResults.count = 0
 		end
+		
+		myLogger:info("importFolder completed with success=" .. tostring(taskResults.success) .. 
+			", count=" .. taskResults.count .. ", complete=" .. tostring(taskResults.processComplete))
 	end)
-	
-	-- Wait a bit for task to complete or at least start processing
-	LrTasks.sleep(1)
 	
 	return taskResults.success
 end
@@ -197,7 +322,9 @@ local function customPicker()
 			end
 
 			local folderField = f:combo_box {
-				items = folderCombo
+				items = folderCombo,
+				value = folderCombo[1],  -- Select the first folder by default
+				tooltip = "Select the folder to process"
 			}
 
 			local watcherRunning = false
@@ -210,8 +337,39 @@ local function customPicker()
 				
 				LrTasks.startAsyncTask(function()
 					while watcherRunning do
+						myLogger:info("Watcher checking folder: " .. folderField.value)
+						
+						-- Safety check
+						if folderField.value == nil or folderField.value == "" then
+							myLogger:error("No folder selected for watcher")
+							LrDialogs.showError("No folder selected. Watcher stopped.")
+							watcherRunning = false
+							props.myObservedString = "Stopped - No folder selected"
+							break
+						end
+						
+						if folderIndex[folderField.value] == nil then
+							myLogger:error("ERROR: folderIndex[" .. folderField.value .. "] is nil!")
+							LrDialogs.showError("Cannot find the selected folder index. Watcher stopped.")
+							watcherRunning = false
+							props.myObservedString = "Stopped - Invalid folder"
+							break
+						end
+						
+						local folderIndexValue = folderIndex[folderField.value]
+						if catalogFolders[folderIndexValue] == nil then
+							myLogger:error("ERROR: catalogFolders[" .. folderIndexValue .. "] is nil!")
+							LrDialogs.showError("Cannot find the selected folder. Watcher stopped.")
+							watcherRunning = false
+							props.myObservedString = "Stopped - Folder not found"
+							break
+						end
+						
+						local folder = catalogFolders[folderIndex[folderField.value]]
+						myLogger:info("Found folder for watcher: " .. folder:getName())
+						
 						-- Process folder in silent mode to prevent too many error dialogs
-						local result = importFolder(LrCatalog, catalogFolders[folderIndex[folderField.value]], outputFolderField.value, true)
+						local result = importFolder(LrCatalog, folder, outputFolderField.value, true)
 						
 						-- Calculate time since last bezel message
 						local currentTime = os.time()
@@ -288,8 +446,31 @@ local function customPicker()
 								props.myObservedString = "Processed once"
 								myLogger:info("Process once button clicked for folder: " .. folderField.value)
 								
-								-- Get photo count for debugging
+								-- Debug logging
+								myLogger:info("Folder value: " .. tostring(folderField.value))
+								
+								-- Verify folder index exists
+								if folderIndex[folderField.value] == nil then
+									myLogger:error("ERROR: folderIndex[" .. folderField.value .. "] is nil!")
+									LrDialogs.showError("Cannot find the selected folder index. Please try selecting the folder again.")
+									return
+								end
+								
+								myLogger:info("Folder index: " .. tostring(folderIndex[folderField.value]))
+								
+								-- Verify folder exists at the index
+								local folderIndexValue = folderIndex[folderField.value]
+								if catalogFolders[folderIndexValue] == nil then
+									myLogger:error("ERROR: catalogFolders[" .. folderIndexValue .. "] is nil!")
+									LrDialogs.showError("Cannot find the selected folder. Please try selecting the folder again.")
+									return
+								end
+								
+								-- Get the folder safely
 								local folder = catalogFolders[folderIndex[folderField.value]]
+								myLogger:info("Found folder: " .. folder:getName())
+								
+								-- Get photo count for debugging
 								local photos = folder:getPhotos()
 								local nonRated2Count = 0
 								
@@ -305,7 +486,7 @@ local function customPicker()
 									"\nTotal photos: " .. #photos .. 
 									"\nPhotos to process (not rated 2): " .. nonRated2Count)
 								
-								importFolder(LrCatalog, catalogFolders[folderIndex[folderField.value]], outputFolderField.value, false)
+								importFolder(LrCatalog, folder, outputFolderField.value, false)
 							else
 								LrDialogs.message("Please select an input folder")
 							end
